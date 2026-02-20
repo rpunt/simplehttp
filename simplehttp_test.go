@@ -10,7 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 )
@@ -19,12 +21,13 @@ import (
 
 var fixturePath string
 
-func init() {
+func TestMain(m *testing.M) {
 	pwd, _ := os.Getwd()
 	fixturePath = filepath.Join(pwd, "fixtures")
+	os.Exit(m.Run())
 }
 
-func TestWrapperMethods(t *testing.T) {
+func TestWrapperMethods(t *testing.T) { //nolint:funlen // subtests for each HTTP method
 	// there's gotta be a better way to reference a set of functions and call them sequentially...?
 	// cases := []struct {
 	// 	method string
@@ -37,7 +40,7 @@ func TestWrapperMethods(t *testing.T) {
 	ts := httptest.NewTLSServer(http.HandlerFunc(handleHTTP))
 	defer ts.Close()
 	c := New(ts.URL)
-	c.HTTPClient = ts.Client()
+	c.Client = ts.Client()
 
 	t.Run("Get", func(t *testing.T) {
 		response, err := c.Get("/icanhazdadjoke")
@@ -46,7 +49,7 @@ func TestWrapperMethods(t *testing.T) {
 		}
 
 		got := response
-		want := HttpResponse{
+		want := HTTPResponse{
 			Body: "",
 			Code: 200,
 		}
@@ -64,8 +67,12 @@ func TestWrapperMethods(t *testing.T) {
 		}
 
 		got := response
-		want := HttpResponse{
-			Body: "{\"header\":{\"Accept-Encoding\":[\"gzip\"],\"Content-Length\":[\"15\"],\"User-Agent\":[\"Go-http-client/1.1\"]},\"body\":\"{\\\"key\\\":\\\"value\\\"}\"}",
+		wantBody := `{"header":{"Accept-Encoding":["gzip"],` +
+			`"Content-Length":["15"],` +
+			`"User-Agent":["Go-http-client/1.1"]},` +
+			`"body":"{\"key\":\"value\"}"}`
+		want := HTTPResponse{
+			Body: wantBody,
 			Code: 200,
 		}
 
@@ -84,7 +91,7 @@ func TestWrapperMethods(t *testing.T) {
 		}
 
 		got := response
-		want := HttpResponse{
+		want := HTTPResponse{
 			Body: "",
 			Code: 200,
 		}
@@ -101,7 +108,7 @@ func TestWrapperMethods(t *testing.T) {
 		}
 
 		got := response
-		want := HttpResponse{
+		want := HTTPResponse{
 			Body: "",
 			Code: 200,
 		}
@@ -118,7 +125,7 @@ func TestWrapperMethods(t *testing.T) {
 		}
 
 		got := response
-		want := HttpResponse{
+		want := HTTPResponse{
 			Body: "",
 			Code: 200,
 		}
@@ -137,15 +144,15 @@ func TestWrapperMethods(t *testing.T) {
 			log.Panicln("error:", err)
 		}
 
-		want_headers := make(http.Header)
-		want_headers.Add("Method", "HEAD")
-		want_headers.Add("Content-Type", "application/json; charset=utf-8")
+		wantHeaders := make(http.Header)
+		wantHeaders.Add("Method", "HEAD")
+		wantHeaders.Add("Content-Type", "application/json; charset=utf-8")
 
 		got := response
-		want := HttpResponse{
+		want := HTTPResponse{
 			Body:    "",
 			Code:    200,
-			Headers: want_headers,
+			Headers: wantHeaders,
 		}
 
 		if !cmp.Equal(want.Code, got.Code) {
@@ -154,6 +161,158 @@ func TestWrapperMethods(t *testing.T) {
 
 		if !cmp.Equal(want.Headers["Content-Type"], got.Headers["Content-Type"]) {
 			t.Error(cmp.Diff(want.Headers, got.Headers))
+		}
+	})
+}
+
+func TestErrorPaths(t *testing.T) { //nolint:funlen // subtests for each error scenario
+	t.Parallel()
+	ts := httptest.NewTLSServer(http.HandlerFunc(handleHTTP))
+	defer ts.Close()
+	c := New(ts.URL)
+	c.Client = ts.Client()
+
+	t.Run("BadRequest", func(t *testing.T) {
+		response, err := c.Get("/bad-request")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if response.Code != http.StatusBadRequest {
+			t.Errorf("expected status %d, got %d", http.StatusBadRequest, response.Code)
+		}
+	})
+
+	t.Run("TooManyRequests", func(t *testing.T) {
+		response, err := c.Get("/too-many")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if response.Code != http.StatusTooManyRequests {
+			t.Errorf("expected status %d, got %d", http.StatusTooManyRequests, response.Code)
+		}
+	})
+
+	t.Run("ProtectedWithoutToken", func(t *testing.T) {
+		response, err := c.Get("/protected")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if response.Code != http.StatusUnauthorized {
+			t.Errorf("expected status %d, got %d", http.StatusUnauthorized, response.Code)
+		}
+		if response.Body != "bad" {
+			t.Errorf("expected body %q, got %q", "bad", response.Body)
+		}
+	})
+
+	t.Run("ProtectedWithToken", func(t *testing.T) {
+		c2 := New(ts.URL)
+		c2.Client = ts.Client()
+		c2.Headers["Authorization"] = "Bearer goodtoken"
+
+		response, err := c2.Get("/protected")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if response.Code != http.StatusOK {
+			t.Errorf("expected status %d, got %d", http.StatusOK, response.Code)
+		}
+		if response.Body != "good" {
+			t.Errorf("expected body %q, got %q", "good", response.Body)
+		}
+	})
+
+	t.Run("UnlimitedRedirect", func(t *testing.T) {
+		_, err := c.Get("/unlimited-redirect")
+		if err == nil {
+			t.Fatal("expected error for unlimited redirect, got nil")
+		}
+	})
+
+	t.Run("NilClient", func(t *testing.T) {
+		c2 := New(ts.URL)
+		c2.Client = nil
+
+		_, err := c2.Get("/")
+		if err == nil {
+			t.Fatal("expected error for nil client, got nil")
+		}
+		if !strings.Contains(err.Error(), "http client is nil") {
+			t.Errorf("expected nil client error, got: %v", err)
+		}
+	})
+}
+
+func TestQueryParameters(t *testing.T) {
+	t.Parallel()
+	ts := httptest.NewTLSServer(http.HandlerFunc(handleHTTP))
+	defer ts.Close()
+	c := New(ts.URL)
+	c.Client = ts.Client()
+
+	t.Run("SingleParam", func(t *testing.T) {
+		c2 := New(ts.URL)
+		c2.Client = ts.Client()
+		c2.Params["foo"] = "bar"
+
+		response, err := c2.Get("/query-parameter")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if response.Code != http.StatusOK {
+			t.Errorf("expected status %d, got %d", http.StatusOK, response.Code)
+		}
+		if response.Body != "foo=bar" {
+			t.Errorf("expected body %q, got %q", "foo=bar", response.Body)
+		}
+	})
+
+	t.Run("MultipleParams", func(t *testing.T) {
+		c2 := New(ts.URL)
+		c2.Client = ts.Client()
+		c2.Params["a"] = "1"
+		c2.Params["b"] = "2"
+
+		response, err := c2.Get("/query-parameter")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if response.Code != http.StatusOK {
+			t.Errorf("expected status %d, got %d", http.StatusOK, response.Code)
+		}
+		if !strings.Contains(response.Body, "a=1") || !strings.Contains(response.Body, "b=2") {
+			t.Errorf("expected query params a=1 and b=2, got %q", response.Body)
+		}
+	})
+}
+
+func TestSetTimeout(t *testing.T) {
+	t.Parallel()
+	ts := httptest.NewTLSServer(http.HandlerFunc(handleHTTP))
+	defer ts.Close()
+
+	t.Run("CustomTimeout", func(t *testing.T) {
+		c := New(ts.URL)
+		c.Client = ts.Client()
+		c.SetTimeout(30 * time.Second)
+
+		if c.Client.Timeout != 30*time.Second {
+			t.Errorf("expected timeout %v, got %v", 30*time.Second, c.Client.Timeout)
+		}
+
+		response, err := c.Get("/icanhazdadjoke")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if response.Code != http.StatusOK {
+			t.Errorf("expected status %d, got %d", http.StatusOK, response.Code)
+		}
+	})
+
+	t.Run("DefaultTimeout", func(t *testing.T) {
+		c := New(ts.URL)
+		if c.Client.Timeout != 10*time.Second {
+			t.Errorf("expected default timeout %v, got %v", 10*time.Second, c.Client.Timeout)
 		}
 	})
 }
@@ -170,46 +329,38 @@ func handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func handleGet(w http.ResponseWriter, r *http.Request) {
+func handleGet(w http.ResponseWriter, r *http.Request) { //nolint:funlen // test handler with many routes
 	switch r.URL.Path {
-	// 	case "/":
-	// 		w.Write([]byte("TestGet: text response"))
 	case "/icanhazdadjoke":
 		f, err := os.ReadFile(fmt.Sprintf("%s/icanhazdadjoke.json", fixturePath))
 		if err != nil {
 			log.Panicf("Error. %+v", err)
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.Write(f)
+		_, _ = w.Write(f)
 	case "/bad-request":
 		w.WriteHeader(http.StatusBadRequest)
 	case "/too-many":
 		w.WriteHeader(http.StatusTooManyRequests)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.Write([]byte(`{"errMsg":"too many requests"}`))
+		_, _ = w.Write([]byte(`{"errMsg":"too many requests"}`))
 	case "/chunked":
 		w.Header().Add("Trailer", "Expires")
-		w.Write([]byte(`This is a chunked body`))
+		_, _ = w.Write([]byte(`This is a chunked body`))
 	case "/host-header":
-		w.Write([]byte(r.Host))
+		_, _ = w.Write([]byte(r.Host))
 	case "/json":
-		r.ParseForm()
+		_ = r.ParseForm()
 		if r.FormValue("type") != "no" {
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		if r.FormValue("error") == "yes" {
 			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte(`{"message": "not allowed"}`))
+			_, _ = w.Write([]byte(`{"message": "not allowed"}`))
 		} else {
-			w.Write([]byte(`{"name": "roc"}`))
+			_, _ = w.Write([]byte(`{"name": "roc"}`))
 		}
-	// case "/xml":
-	// 	r.ParseForm()
-	// 	if r.FormValue("type") != "no" {
-	// 		w.Header().Set("Content-Type", header.XmlContentType)
-	// 	}
-	// 	w.Write([]byte(`<user><name>roc</name></user>`))
 	case "/unlimited-redirect":
 		w.Header().Set("Location", "/unlimited-redirect")
 		w.WriteHeader(http.StatusMovedPermanently)
@@ -220,29 +371,15 @@ func handleGet(w http.ResponseWriter, r *http.Request) {
 		w.Header().Add("Pragma", "no-cache")
 	case "/payload":
 		b, _ := io.ReadAll(r.Body)
-		w.Write(b)
-	// case "/gbk":
-	// 	w.Header().Set("Content-Type", "text/plain; charset=gbk")
-	// 	w.Write(toGbk("我是roc"))
-	// case "/gbk-no-charset":
-	// 	b, err := io.ReadFile(tests.GetTestFilePath("sample-gbk.html"))
-	// 	if err != nil {
-	// 		panic(err)
-	// 	}
-	// 	w.Header().Set("Content-Type", "text/html")
-	// 	w.Write(b)
+		_, _ = w.Write(b)
 	case "/header":
 		b, _ := json.Marshal(r.Header)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.Write(b)
-	// case "/user-agent":
-	// 	w.Write([]byte(r.Header.Get(header.UserAgent)))
+		_, _ = w.Write(b)
 	case "/content-type":
-		w.Write([]byte(r.Header.Get("Content-Type")))
+		_, _ = w.Write([]byte(r.Header.Get("Content-Type")))
 	case "/query-parameter":
-		w.Write([]byte(r.URL.RawQuery))
-	// case "/search":
-	// 	handleSearch(w, r)
+		_, _ = w.Write([]byte(r.URL.RawQuery))
 	case "/download":
 		size := 100 * 1024 * 1024
 		w.Header().Set("Content-Length", strconv.Itoa(size))
@@ -264,15 +401,11 @@ func handleGet(w http.ResponseWriter, r *http.Request) {
 	case "/protected":
 		auth := r.Header.Get("Authorization")
 		if auth == "Bearer goodtoken" {
-			w.Write([]byte("good"))
+			_, _ = w.Write([]byte("good"))
 		} else {
 			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte(`bad`))
+			_, _ = w.Write([]byte(`bad`))
 		}
-	default:
-		// if strings.HasPrefix(r.URL.Path, "/user") {
-		// 	handleGetUserProfile(w, r)
-		// }
 	}
 }
 
@@ -282,45 +415,43 @@ type Echo struct {
 	Body   string      `json:"body" xml:"body"`
 }
 
-func handlePost(w http.ResponseWriter, r *http.Request) {
+func handlePost(w http.ResponseWriter, r *http.Request) { //nolint:funlen // test handler with many routes
 	switch r.URL.Path {
 	case "/":
-		io.Copy(io.Discard, r.Body)
-		w.Write([]byte("TestPost: text response"))
+		_, _ = io.Copy(io.Discard, r.Body)
+		_, _ = w.Write([]byte("TestPost: text response"))
 	case "/raw-upload":
-		io.Copy(io.Discard, r.Body)
+		_, _ = io.Copy(io.Discard, r.Body)
 	case "/file-text":
-		r.ParseMultipartForm(10e6)
+		_ = r.ParseMultipartForm(10e6)
 		files := r.MultipartForm.File["file"]
 		file, _ := files[0].Open()
 		b, _ := io.ReadAll(file)
-		r.ParseForm()
+		_ = r.ParseForm()
 		if a := r.FormValue("attempt"); a != "" && a != "2" {
 			w.WriteHeader(http.StatusInternalServerError)
 		}
-		w.Write(b)
+		_, _ = w.Write(b)
 	case "/form":
-		r.ParseForm()
+		_ = r.ParseForm()
 		ret, _ := json.Marshal(&r.Form)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.Write(ret)
+		_, _ = w.Write(ret)
 	case "/multipart":
-		r.ParseMultipartForm(10e6)
-		m := make(map[string]interface{})
+		_ = r.ParseMultipartForm(10e6)
+		m := make(map[string]any)
 		m["values"] = r.MultipartForm.Value
 		m["files"] = r.MultipartForm.File
 		ret, _ := json.Marshal(&m)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.Write(ret)
-	// case "/search":
-	// 	handleSearch(w, r)
+		_, _ = w.Write(ret)
 	case "/redirect":
-		io.Copy(io.Discard, r.Body)
+		_, _ = io.Copy(io.Discard, r.Body)
 		w.Header().Set("Location", "/")
 		w.WriteHeader(http.StatusMovedPermanently)
 	case "/content-type":
-		io.Copy(io.Discard, r.Body)
-		w.Write([]byte(r.Header.Get("Content-Type")))
+		_, _ = io.Copy(io.Discard, r.Body)
+		_, _ = w.Write([]byte(r.Header.Get("Content-Type")))
 	case "/echo":
 		b, _ := io.ReadAll(r.Body)
 		e := Echo{
@@ -329,16 +460,15 @@ func handlePost(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		result, _ := json.Marshal(&e)
-		w.Write(result)
+		_, _ = w.Write(result)
 	}
 }
 
 func handleHead(w http.ResponseWriter, r *http.Request) {
-	switch r.URL.Path {
-	case "/header":
+	if r.URL.Path == "/header" {
 		b, _ := json.Marshal(r.Header)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.Write(b)
+		_, _ = w.Write(b)
 	}
 }
 
@@ -477,7 +607,7 @@ func handleHead(w http.ResponseWriter, r *http.Request) {
 // 		log.Panicln("error:", err)
 // 	}
 // 	got := response
-// 	want := HttpResponse{
+// 	want := HTTPResponse{
 // 		Body: "",
 // 		Code: 200,
 // 	}
