@@ -163,6 +163,57 @@ func TestWrapperMethods(t *testing.T) { //nolint:funlen // subtests for each HTT
 			t.Error(cmp.Diff(want.Headers, got.Headers))
 		}
 	})
+
+	t.Run("Connect", func(t *testing.T) {
+		response, err := c.Connect("/")
+		if err != nil {
+			log.Panicln("error:", err)
+		}
+
+		got := response
+		want := HTTPResponse{
+			Body: "",
+			Code: 200,
+		}
+
+		if !cmp.Equal(want.Code, got.Code) {
+			t.Error(cmp.Diff(want.Code, got.Code))
+		}
+	})
+
+	t.Run("Options", func(t *testing.T) {
+		response, err := c.Options("/")
+		if err != nil {
+			log.Panicln("error:", err)
+		}
+
+		got := response
+		want := HTTPResponse{
+			Body: "",
+			Code: 200,
+		}
+
+		if !cmp.Equal(want.Code, got.Code) {
+			t.Error(cmp.Diff(want.Code, got.Code))
+		}
+	})
+
+	t.Run("Trace", func(t *testing.T) {
+		response, err := c.Trace("/")
+		if err != nil {
+			log.Panicln("error:", err)
+		}
+
+		got := response
+		want := HTTPResponse{
+			Body: "",
+			Code: 200,
+		}
+
+		if !cmp.Equal(want.Code, got.Code) {
+			t.Error(cmp.Diff(want.Code, got.Code))
+		}
+	})
 }
 
 func TestErrorPaths(t *testing.T) { //nolint:funlen // subtests for each error scenario
@@ -326,6 +377,9 @@ func handleHTTP(w http.ResponseWriter, r *http.Request) {
 		handlePost(w, r)
 	case http.MethodHead:
 		handleHead(w, r)
+	case http.MethodConnect, http.MethodOptions, http.MethodTrace, http.MethodPatch, http.MethodPut, http.MethodDelete:
+		// These methods just return 200 OK for basic testing
+		w.WriteHeader(http.StatusOK)
 	}
 }
 

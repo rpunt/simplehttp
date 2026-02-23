@@ -120,3 +120,15 @@ func (client *HTTPClient) Delete(path string) (HTTPResponse, error) {
 func (client *HTTPClient) Head(path string) (HTTPResponse, error) {
 	return sendRequest(client, path, http.MethodHead)
 }
+
+func (client *HTTPClient) Connect(path string) (HTTPResponse, error) {
+	return sendRequest(client, path, http.MethodConnect)
+}
+
+func (client *HTTPClient) Options(path string) (HTTPResponse, error) {
+	return sendRequest(client, path, http.MethodOptions)
+}
+
+func (client *HTTPClient) Trace(path string) (HTTPResponse, error) {
+	return sendRequest(client, path, http.MethodTrace)
+}

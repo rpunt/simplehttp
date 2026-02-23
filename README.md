@@ -90,6 +90,6 @@ This library intentionally omits `context.Context` from its API to keep things s
 * [x] PUT
 * [x] DELETE
 * [x] HEAD
-* [ ] CONNECT
-* [ ] OPTIONS
-* [ ] TRACE
+* [x] CONNECT
+* [x] OPTIONS
+* [x] TRACE
